@@ -8,13 +8,15 @@ import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbManager
+import android.net.Uri
+import android.os.Build
 import androidx.core.math.MathUtils
+import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import com.hoho.android.usbserial.util.SerialInputOutputManager
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import java.io.FileNotFoundException
+import java.io.OutputStream
 import java.lang.Exception
 import java.lang.IllegalArgumentException
 import kotlin.concurrent.thread
@@ -27,16 +29,30 @@ private val ackBytes = stringToBinary("@2@6@3")
 private val nackBytes = stringToBinary("@2@21@3")
 
 /* After requestOpen() is called and the user grants permission, Recorder starts a thread that
-collects and acknowledges checksum'd STX/ETX messages on the usb-serial connection. Use
-mutex.withLock whenever accessing any public member variables. Don't interact with Recorder from
-multiple threads. */
-class Recorder(context: Context) {
-    class Message(val bytes: ByteArray)
+collects and acknowledges checksum'd STX/ETX messages on the usb-serial connection. Use numMessages
+and getMessageCopy() to access these messages.
 
-    val messages = mutableListOf<Message>()
-    val mutex = Mutex()
-    var numErrors = 0 // FIXME: save bad messages too but mark them so UI can display them with error coloring
-        private set
+dataBits should be one of the constants UsbSerialPort.DATABITS_...
+stopBits should be one of the constants UsbSerialPort.STOPBITS_...
+parity should be one of the constants UsbSerialPort.PARITY_...*/
+class Recorder(context: Context, baudRate: Int, dataBits: Int, stopBits: Int, parity: Int) {
+    class Message(val bytes: ByteArray) {
+        fun copyOf() : Message {
+            return Message(bytes.copyOf())
+        }
+    }
+
+    val numMessages: Int
+        get() {synchronized(bigLock) {return messages.size}}
+
+    val numErrors: Int
+        get() {synchronized(bigLock) {return _numErrors}}
+
+    fun getMessageCopy(i: Int) : Message {
+        synchronized(bigLock) {
+            return messages[i].copyOf()
+        }
+    }
 
     fun requestOpen() {
         if(isOpen())
@@ -49,8 +65,12 @@ class Recorder(context: Context) {
             return
 
         val driver = drivers[0]
-        heldContext.registerReceiver(permissionReceiver, IntentFilter(ACTION_USB_PERMISSION))
-            // FIXME: can this be registered multiple times?
+
+        if(Build.VERSION.SDK_INT >= 33) {
+            heldContext.registerReceiver(permissionReceiver, IntentFilter(ACTION_USB_PERMISSION), Context.RECEIVER_EXPORTED)
+        } else {
+            heldContext.registerReceiver(permissionReceiver, IntentFilter(ACTION_USB_PERMISSION))
+        }
 
         usb.requestPermission(driver.device, PendingIntent.getBroadcast(heldContext, 0,
             Intent(ACTION_USB_PERMISSION), PendingIntent.FLAG_MUTABLE))
@@ -61,12 +81,52 @@ class Recorder(context: Context) {
     }
 
     fun close() {
-        serialIO?.listener = null
-        serialIO?.stop()
-        serialIO = null
-        serialConnection?.port?.close()
-        serialConnection?.connection?.close()
-        serialConnection = null
+        synchronized(bigLock) {
+            serialIO?.listener = null
+            serialIO?.stop()
+            serialIO = null
+
+            try {
+                serialConnection?.port?.close()
+            } catch(_: java.io.IOException) {}
+
+            serialConnection?.connection?.close()
+            serialConnection = null
+        }
+    }
+
+    fun clear() {
+        synchronized(bigLock) {
+            close()
+
+            try {
+                logStream?.close()
+            } catch(_: java.io.IOException) {}
+
+            logStream = null
+            messages.clear()
+            _numErrors = 0
+            messageLevel = 0
+            tempMessage.clear()
+            checksum = 0
+            checksumState = ChecksumState.NONE
+        }
+    }
+
+    // Returns true if log set to given uri
+    fun startLogging(uri: Uri) : Boolean {
+        if (logStream != null)
+            return false
+
+        try {
+            synchronized(bigLock) {
+                logStream = heldContext.contentResolver.openOutputStream(uri)
+            }
+        } catch (e: FileNotFoundException) {
+            return false
+        }
+
+        return true
     }
 
     // For testing; only call once
@@ -96,12 +156,17 @@ class Recorder(context: Context) {
     PRIVATE
     */
 
-    private class SerialConnection(val connection: UsbDeviceConnection, val port: UsbSerialPort)
+    private class SerialConnection(val connection: UsbDeviceConnection, val port: UsbSerialPort,
+                                   var good: Boolean = true)
 
     private enum class ChecksumState {
         NONE, EXPECTED, GOOD, BAD
     }
 
+    private val bigLock = Any() // Syncs class-user thread and internal serialListener thread
+
+    private val messages = mutableListOf<Message>()
+    private var _numErrors = 0 // FIXME: save bad messages too but mark them so UI can display them with error coloring
     private val heldContext = context
     private var serialConnection: SerialConnection? = null
     private var serialIO: SerialInputOutputManager? = null
@@ -109,6 +174,7 @@ class Recorder(context: Context) {
     private var tempMessage = ResizableByteArray(1024)
     private var checksum = 0
     private var checksumState = ChecksumState.NONE
+    private var logStream: OutputStream? = null
 
     private val permissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(receivedContext: Context, intent: Intent) {
@@ -116,137 +182,154 @@ class Recorder(context: Context) {
                 intent.action == ACTION_USB_PERMISSION &&
                 intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
             ) {
-                val device: UsbDevice? = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
-                    // FIXME: getParcelableExtra deprecated
-
-                if (device == null)
-                    return
+                val device: UsbDevice = intent.getParcelableExtraUndeprecated(
+                    UsbManager.EXTRA_DEVICE,
+                    UsbDevice::class.java
+                ) ?: return
 
                 val usb = receivedContext.getSystemService(Context.USB_SERVICE) as UsbManager
+                val driver: UsbSerialDriver
 
-                val driver = UsbSerialProber.getDefaultProber().findAllDrivers(usb).first {
-                    it.device == device
+                try {
+                    driver = UsbSerialProber.getDefaultProber().findAllDrivers(usb).first {
+                        it.device == device
+                    }
+                } catch(e: NoSuchElementException) {
+                    return
                 }
 
-                if (driver == null || driver.ports.isEmpty())
+                if (driver.ports.isEmpty())
                     return
 
-                val connection = usb.openDevice(device)
+                val connection: UsbDeviceConnection
 
-                if (connection == null)
+                try {
+                    connection = usb.openDevice(device) ?: return
+                } catch(e: java.io.IOException) {
                     return
+                }
 
-                val port = driver.ports[0]
-                port.open(connection)
+                val port: UsbSerialPort
 
-                port.setParameters(
-                    9600,
-                    7,
-                    UsbSerialPort.STOPBITS_1,
-                    UsbSerialPort.PARITY_EVEN
-                ) // FIXME: customizable by user
+                try {
+                    port = driver.ports[0]
+                    port.open(connection)
+                    port.setParameters(baudRate, dataBits, stopBits, parity)
+                    port.dtr = true
+                    port.rts = true
+                } catch(e: java.io.IOException) {
+                    connection.close()
+                    return
+                }
 
-                port.dtr = true
-                port.rts = true
-
-                serialConnection = SerialConnection(connection, port)
-
-                serialIO = SerialInputOutputManager(port, serialListener)
-                serialIO?.start()
+                synchronized(bigLock) {
+                    serialConnection = SerialConnection(connection, port)
+                    serialIO = SerialInputOutputManager(port, serialListener)
+                    serialIO?.start()
+                }
             }
 
             try {
                 heldContext.unregisterReceiver(this)
-            } catch(e: IllegalArgumentException) { // In case receiver is already unregistered
-                null
-            }
+            } catch(_: IllegalArgumentException) {} // In case receiver is already unregistered
         }
     }
 
     private val serialListener = object : SerialInputOutputManager.Listener {
         override fun onNewData(data: ByteArray) {
-            runBlocking { // FIXME: start a coroutine or does this thread not have any other work?
-                receive(data)
-            }
+            receive(data)
+
+            if(serialConnection?.good == false)
+                close()
         }
 
         override fun onRunError(e: Exception?) {
-            close() // FIXME: possible race condition?
+            close()
         }
     }
 
-    private suspend fun receive(data: ByteArray) {
-        data.forEach {
-            if(checksumState == ChecksumState.EXPECTED) {
-                checksumState = if(checksum == it.toInt()) ChecksumState.GOOD else ChecksumState.BAD
-                checksum = 0
-                tempMessage.add(it)
-            } else if(checksumState == ChecksumState.NONE) {
-                if(messageLevel >= 2) {
-                    checksum = (checksum xor it.toInt()) % 255
-                }
+    private fun receive(data: ByteArray) {
+        synchronized(bigLock) {
+            try {
+                logStream?.write(data)
+            } catch(_: java.io.IOException) {}
 
-                if (it.compareTo(STX) == 0) {
-                    if (messageLevel == 0)
-                        tempMessage.clear()
-
-                    messageLevel++
-                }
-
-                tempMessage.add(it)
-
-                if (it.compareTo(ETX) == 0 || it.compareTo(ETB) == 0) {
-                    messageLevel--
-
-                    if (messageLevel == 1) {
-                        checksumState = ChecksumState.EXPECTED
-                    } else if (messageLevel < 0) {
-                        send(ackBytes)
-                        messageLevel = 0
-                    }
-                }
-            } else {
-                // Next byte after the checksum; assume it's ETX or ETB
-                if(it.compareTo(ETX) == 0 || it.compareTo(ETB) == 0)
+            data.forEach {
+                if (checksumState == ChecksumState.EXPECTED) {
+                    checksumState =
+                        if (checksum == it.toInt()) ChecksumState.GOOD else ChecksumState.BAD
+                    checksum = 0
                     tempMessage.add(it)
-                else
-                    tempMessage.add(ETX.toByte())
+                } else if (checksumState == ChecksumState.NONE) {
+                    if (messageLevel >= 2) {
+                        checksum = (checksum xor it.toInt()) % 255
+                    }
 
-                messageLevel = 0
+                    if (it.compareTo(STX) == 0) {
+                        if (messageLevel == 0)
+                            tempMessage.clear()
 
-                /* FIXME: It turns out the scale device considers anything wrapped with STX and ETX
+                        messageLevel++
+                    }
+
+                    tempMessage.add(it)
+
+                    if (it.compareTo(ETX) == 0 || it.compareTo(ETB) == 0) {
+                        messageLevel--
+
+                        if (messageLevel == 1) {
+                            checksumState = ChecksumState.EXPECTED
+                        } else if (messageLevel < 0) {
+                            send(ackBytes)
+                            messageLevel = 0
+                        }
+                    }
+                } else {
+                    // Next byte after the checksum; assume it's ETX or ETB
+                    if (it.compareTo(ETX) == 0 || it.compareTo(ETB) == 0)
+                        tempMessage.add(it)
+                    else
+                        tempMessage.add(ETX.toByte())
+
+                    messageLevel = 0
+
+                    /* FIXME: It turns out the scale device considers anything wrapped with STX and ETX
                     to be an acknowledgement, the NACK doesn't do anything different; it might want
                     a specific text message */
-                val selectAck: ByteArray? = when(checksumState) {
-                    ChecksumState.GOOD -> ackBytes
-                    ChecksumState.BAD -> nackBytes
-                    else -> null
-                }
+                    val selectAck: ByteArray? = when (checksumState) {
+                        ChecksumState.GOOD -> ackBytes
+                        ChecksumState.BAD -> nackBytes
+                        else -> null
+                    }
 
-                if(selectAck != null)
-                    send(selectAck)
+                    if (selectAck != null)
+                        send(selectAck)
 
-                /* FIXME: Class user can delay acknowledgement with this public mutex; put messages
-                    into a private list that's transferred over to public in a coroutine? */
-                if(checksumState == ChecksumState.GOOD) {
-                    mutex.withLock {
+                    if (checksumState == ChecksumState.GOOD) {
                         messages.add(Message(tempMessage.toByteArray()))
+                    } else if (checksumState == ChecksumState.BAD) {
+                        _numErrors++
                     }
-                }
-                else if(checksumState == ChecksumState.BAD) {
-                    mutex.withLock {
-                        numErrors++
-                    }
-                }
 
-                tempMessage.clear()
-                checksumState = ChecksumState.NONE
+                    tempMessage.clear()
+                    checksumState = ChecksumState.NONE
+                }
             }
         }
     }
 
     private fun send(data: ByteArray) {
-        serialConnection?.port?.write(data, 0)
+        synchronized(bigLock) {
+            try {
+                serialConnection?.port?.write(data, 0)
+            } catch(e: java.io.IOException) {
+                serialConnection?.good = false
+            }
+
+            try {
+                logStream?.write(data)
+            } catch(_: java.io.IOException) {}
+        }
     }
 }
 
@@ -256,7 +339,7 @@ fun binaryToString(bytes: ByteArray) : String {
 
     bytes.forEach {
         val i = it.toInt()
-        val type = if(i >= 32 && i <= 126) 1 else -1
+        val type = if(i in 32..126) 1 else -1
 
         if(type == 1) {
             if(lastType != 0 && lastType != type)
@@ -267,7 +350,7 @@ fun binaryToString(bytes: ByteArray) : String {
             if(lastType != 0)
                 str += ' '
 
-            str += '<' + i.toString() + '>'
+            str += "<$i>"
         }
 
         lastType = type
@@ -315,4 +398,12 @@ fun stringToBinary(str: String) : ByteArray {
     }
 
     return bin.copyOfRange(0, w)
+}
+
+fun <T> Intent.getParcelableExtraUndeprecated(name: String, clazz: Class<T>): T? {
+    if(Build.VERSION.SDK_INT >= 33) {
+        return getParcelableExtra(name, clazz)
+    } else {
+        return getParcelableExtra(name)
+    }
 }

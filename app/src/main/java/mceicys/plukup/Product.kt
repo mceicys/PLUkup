@@ -30,9 +30,6 @@ private const val US    = 31
 // If a parse function returns GOOD or DONE, it should set index to the next byte to be parsed
 // Otherwise, the function must not modify index
 private class ParseState(private val bytes: ByteArray, private val products: MutableList<Product>, private var index: Int = 0) {
-    /* FIXME: pay attention to when a checksum should appear and ignore it since it can equal
-        2 (STX), 3 (ETX), and 23 (ETB); this doesn't break parsing in practice because every message
-        is followed by an extra ETX, but it's the right thing to do */
     fun parseMessage() : ParseResult {
         val save = index
 
@@ -51,14 +48,23 @@ private class ParseState(private val bytes: ByteArray, private val products: Mut
                 return res
             }
 
-            // Skip rest of message until same-level ETX
+            // Skip rest of message until same-level end-byte
             var lvl = 1
+            var checksumExpected = res == ParseResult.GOOD
 
             while(index < bytes.size) {
-                if(isStartByte(bytes[index]))
-                    lvl++
-                else if(isEndByte(bytes[index]))
-                    lvl--
+                if(checksumExpected)
+                    checksumExpected = false
+                else { // Only react to byte if it's not supposed to be a checksum
+                    if (isStartByte(bytes[index]))
+                        lvl++
+                    else if (isEndByte(bytes[index])) {
+                        lvl--
+
+                        if(lvl == 1)
+                            checksumExpected = true
+                    }
+                }
 
                 index++
 

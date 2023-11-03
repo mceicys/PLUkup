@@ -15,13 +15,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
-// FIXME: implement dark theme
 private val DarkColorScheme = darkColorScheme(
+    background = colorDark,
+    onBackground = colorLight,
     primary = colorLight,
     onPrimary = colorDark,
-    secondary = colorMedium,
+    secondary = colorMediumDark,
     onSecondary = colorLight,
-    tertiary = colorDark
+    tertiary = colorDark,
+    error = colorLight,
+    onError = colorDark
 )
 
 private val LightColorScheme = lightColorScheme(

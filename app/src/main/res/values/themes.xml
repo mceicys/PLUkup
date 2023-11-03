@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- FIXME: dark mode theme -->
-    <style name="Theme.PLUkup" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:windowBackground">@color/plukup_light</item>
+    <style name="Theme.PLUkup" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/plukup_background</item>
     </style>
 </resources>

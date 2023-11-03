@@ -1,6 +1,8 @@
 package mceicys.plukup
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -24,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalFocusManager
@@ -121,20 +124,28 @@ fun CustomTextField(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun CustomButton(onClick: () -> Unit, modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit) {
+fun CustomButton(modifier: Modifier = Modifier,
+                 onClick: () -> Unit = {},
+                 onLongClick: (() -> Unit)? = null,
+                 borderColor: Color = MaterialTheme.colorScheme.onBackground,
+                 contentColor: Color = MaterialTheme.colorScheme.onBackground,
+                 backgroundColor: Color = MaterialTheme.colorScheme.background,
+                 content: @Composable BoxScope.() -> Unit) {
     CompositionLocalProvider(LocalMinimumTouchTargetEnforcement provides false) {
         Surface(
-            onClick = onClick,
             shape = RectangleShape,
-            color = MaterialTheme.colorScheme.onBackground,
-            modifier = modifier
+            color = borderColor,
+            modifier = modifier.combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
         ) {
             Surface(
                 shape = CutCornerShape(size = 8.dp),
-                color = MaterialTheme.colorScheme.background,
-                contentColor = MaterialTheme.colorScheme.onBackground, // This isn't resolving automatically
+                color = backgroundColor,
+                contentColor = contentColor,
                 modifier = Modifier.padding(2.dp)
             ) {
                 Box(

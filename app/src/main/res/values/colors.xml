@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="plukup_light">#BECBF4</color> <!-- FIXME: doesn't visually match the same hex color in Color.kt -->
+    <color name="plukup_background">#BECBF4</color>
 </resources>
