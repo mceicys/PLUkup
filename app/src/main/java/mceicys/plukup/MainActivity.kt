@@ -26,35 +26,50 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import mceicys.plukup.ui.theme.PLUkupTheme
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.max
+import androidx.compose.ui.window.Dialog
 import androidx.core.view.WindowCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import mceicys.plukup.ui.theme.PLUkupTheme
 import java.io.FileNotFoundException
+import kotlin.math.max
 
 val products = mutableListOf<Product>()
 val productSubset = mutableStateListOf<Product>()
-val searchString = mutableStateOf("")
+val searchField = mutableStateOf(TextFieldValue())
 val currentFileName = mutableStateOf("")
+val productListState = mutableStateOf(LazyListState())
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -96,7 +111,7 @@ class MainActivity : ComponentActivity() {
                 currentFileName.value = uri.path?.substringAfterLast('/') ?: ""
                 products.clear()
                 products.addAll(parseProducts(stream.readBytes()))
-                searchString.value = ""
+                searchField.value = searchField.value.copy("")
                 searchProducts("")
                 stream.close()
             } else {
@@ -145,9 +160,34 @@ fun searchProducts(str: String) {
     }
 }
 
-fun setSearchString(str: String) {
-    searchString.value = str
-    searchProducts(searchString.value)
+fun scrollToID(idStr: String) {
+    val id = idStr.toIntOrNull()
+    var index = 0
+
+    if(id != null) {
+        index = productSubset.size
+        var bestDistance = Int.MAX_VALUE
+
+        for (i in productSubset.indices) {
+            val distance = productSubset[i].id - id
+
+            if(distance in 0 until bestDistance) {
+                bestDistance = distance
+                index = i
+            }
+
+            if(distance == 0) {
+                break
+            }
+        }
+
+        if(bestDistance != 0)
+            index = max(0, index - 1)
+    }
+
+    CoroutineScope(Dispatchers.Main).launch {
+        productListState.value.scrollToItem(index)
+    }
 }
 
 @Composable
@@ -156,6 +196,10 @@ fun ProductListUI() {
     val activity = context as MainActivity
     val colors = MaterialTheme.colorScheme
         // FIXME: Figure out auto-coloring (e.g. Text should get onBackground color when in a Surface with background color)
+    val showIDPrompt = remember { mutableStateOf(false) }
+    val idField = remember { mutableStateOf(TextFieldValue()) }
+    val focusManager = LocalFocusManager.current
+    val idFocusRequester = remember { FocusRequester() }
     val showForgetPrompt = remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.background(colors.background)) {
@@ -172,32 +216,87 @@ fun ProductListUI() {
             Modifier
                 .fillMaxWidth()
                 .padding(8.dp)) {
-            Text("File: ${currentFileName.value}", color = colors.onBackground, maxLines = 1, modifier = Modifier.padding(bottom = 4.dp))
+            Text("${productSubset.size}/${products.size}; ${currentFileName.value}", color = colors.onBackground, maxLines = 1, modifier = Modifier.padding(bottom = 4.dp))
 
-            CustomTextField(
-                searchString.value,
-                onValueChange = { txt -> setSearchString(txt) },
-                placeholder = { Text("Search") },
-                trailingIcon = {
-                    Icon(
-                        Icons.Default.Clear,
-                        contentDescription = "Clear text",
-                        modifier = Modifier.clickable { setSearchString("") })
-                },
-                keyboardOptions = KeyboardOptions(
-                    capitalization = KeyboardCapitalization.None,
-                    autoCorrect = false,
-                    keyboardType = KeyboardType.Uri // Hack to disable autocorrect so it doesn't fix names like "Old Tyme"
-                ),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
+            Row {
+                val inputRowHeight = 40.dp
+
+                CustomButton(
+                    onClick = {
+                        idField.value = idField.value.copy("")
+                        showIDPrompt.value = true
+                    },
+                    modifier = Modifier.size(64.dp, inputRowHeight)
+                ) {Text("ID")}
+
+                if(showIDPrompt.value) {
+                    val dismiss = {showIDPrompt.value = false}
+
+                    Dialog(
+                        onDismissRequest = dismiss
+                    ) {
+                        Card(
+                            shape = RectangleShape,
+                            colors = CardDefaults.cardColors(
+                                containerColor = colors.background,
+                                contentColor = colors.primary
+                            )
+                        ) {
+                            CustomTextField(
+                                idField.value,
+                                onValueChange = { newField -> if(newField.text.length <= 9) idField.value = newField },
+                                placeholder = { Text("ID #") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Number
+                                ),
+                                keyboardActions = KeyboardActions(
+                                    onDone = {
+                                        scrollToID(idField.value.text)
+                                        dismiss()
+                                    }
+                                ),
+                                modifier = Modifier
+                                    .focusRequester(idFocusRequester)
+                                    .size(108.dp, inputRowHeight)
+                            )
+                        }
+
+                        LaunchedEffect(showIDPrompt) {
+                            if(showIDPrompt.value) {
+                                focusManager.clearFocus(true)
+                                idFocusRequester.requestFocus()
+                            }
+                        }
+                    }
+                }
+
+                CustomTextField(
+                    searchField.value,
+                    onValueChange = { newField -> searchField.value = newField; searchProducts(searchField.value.text) },
+                    placeholder = { Text("Name") },
+                    trailingIcon = {
+                        Icon(
+                            Icons.Default.Clear,
+                            contentDescription = "Clear text",
+                            modifier = Modifier.clickable { searchField.value = searchField.value.copy(""); searchProducts(searchField.value.text) })
+                    },
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.None,
+                        autoCorrect = false,
+                        keyboardType = KeyboardType.Uri // Hack to disable autocorrect so it doesn't fix names like "Old Tyme"
+                    ),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().height(inputRowHeight)
+                )
+            }
         }
 
         LazyColumn(modifier = Modifier
             .fillMaxWidth()
             .fillMaxHeight()
-            .weight(1.0f)) {
+            .weight(1.0f),
+            state = productListState.value) {
             itemsIndexed(productSubset) { index, it ->
                 Row(modifier = Modifier.background(if(index % 2 == 0) colors.background else colors.secondary)) {
                     Text(

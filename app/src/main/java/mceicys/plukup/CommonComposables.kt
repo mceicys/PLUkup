@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -38,8 +39,8 @@ import androidx.compose.ui.unit.dp
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CustomTextField(
-    value: String,
-    onValueChange: (String) -> Unit,
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     readOnly: Boolean = false,
@@ -99,7 +100,7 @@ fun CustomTextField(
                     cursorBrush = SolidColor(MaterialTheme.colorScheme.onBackground),
                     decorationBox = @Composable { innerTextField ->
                         TextFieldDefaults.TextFieldDecorationBox(
-                            value = value,
+                            value = value.text,
                             visualTransformation = visualTransformation,
                             innerTextField = innerTextField,
                             placeholder = placeholder,
