@@ -6,8 +6,15 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -30,11 +37,58 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.max
+
+@Composable
+fun TopPadding() {
+    // Top padding to make room for system UI since it's no longer resizing for us
+    Box(modifier = Modifier
+        .fillMaxWidth()
+        .height(
+            WindowInsets.systemBars
+                .asPaddingValues()
+                .calculateTopPadding()
+        )) {}
+}
+
+@Composable
+fun BottomPadding(hideUnderKeyboard: Dp) {
+    Box(modifier = Modifier
+        .fillMaxWidth()
+        .height(
+            max(
+                WindowInsets.systemBars
+                    .asPaddingValues()
+                    .calculateBottomPadding(),
+                WindowInsets.ime
+                    .asPaddingValues()
+                    .calculateBottomPadding() - hideUnderKeyboard
+            )
+        )
+    ) {}
+}
+
+@Composable
+fun SidePaddingParent(content: @Composable () -> Unit) {
+    val systemBarPadding = WindowInsets.systemBars.asPaddingValues()
+    val layoutDirection = LocalLayoutDirection.current
+
+    Surface(modifier = Modifier
+        .padding(
+            start = systemBarPadding.calculateStartPadding(layoutDirection),
+            end = systemBarPadding.calculateEndPadding(layoutDirection)
+        ),
+        content = content)
+}
+
+/* FIXME: explicitly sized text fields and buttons cut off large font sizes; these composables
+    should make room if they have to */
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,20 +105,24 @@ fun CustomTextField(
     singleLine: Boolean = false,
     maxLines: Int = Int.MAX_VALUE,
     innerPadding: Dp = 2.dp,
-    interactionSource: MutableInteractionSource = remember { MutableInteractionSource() }
+    innerTopPadding: Dp = innerPadding,
+    interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
+    primaryColor: Color = MaterialTheme.colorScheme.primary,
+    secondaryColor: Color = MaterialTheme.colorScheme.secondary,
+    backgroundColor: Color = MaterialTheme.colorScheme.background
 ) {
     val visualTransformation = VisualTransformation.None
 
     val selectionColors = TextSelectionColors(
-        handleColor = MaterialTheme.colorScheme.onBackground,
-        backgroundColor = MaterialTheme.colorScheme.secondary
+        handleColor = primaryColor,
+        backgroundColor = secondaryColor
     )
 
     val colors = TextFieldDefaults.textFieldColors(
-        containerColor = MaterialTheme.colorScheme.background,
-        placeholderColor = MaterialTheme.colorScheme.onBackground,
-        unfocusedIndicatorColor = MaterialTheme.colorScheme.onBackground,
-        focusedIndicatorColor = MaterialTheme.colorScheme.onBackground
+        containerColor = backgroundColor,
+        placeholderColor = primaryColor,
+        unfocusedIndicatorColor = primaryColor,
+        focusedIndicatorColor = primaryColor
     )
 
     val focusManager = LocalFocusManager.current
@@ -76,8 +134,8 @@ fun CustomTextField(
             onClick = { focusManager.clearFocus(true); focusRequester.requestFocus() },
             // Allows the user to tap the BasicTextField's padding and still get its focus
             shape = RectangleShape,
-            color = MaterialTheme.colorScheme.background,
-            modifier = modifier.border(2.dp, MaterialTheme.colorScheme.onBackground)
+            color = backgroundColor,
+            modifier = modifier.border(2.dp, primaryColor)
         ) {
             CompositionLocalProvider(LocalTextSelectionColors provides selectionColors) {
                 BasicTextField(
@@ -89,7 +147,7 @@ fun CustomTextField(
                         .fillMaxWidth(),
                     enabled = enabled,
                     readOnly = readOnly,
-                    textStyle = MaterialTheme.typography.bodyLarge.plus(TextStyle(color = MaterialTheme.colorScheme.onBackground)),
+                    textStyle = MaterialTheme.typography.bodyLarge.plus(TextStyle(color = primaryColor)),
                     keyboardOptions = keyboardOptions,
                     keyboardActions = keyboardActions,
                     singleLine = singleLine,
@@ -97,7 +155,7 @@ fun CustomTextField(
                     minLines = 1,
                     visualTransformation = visualTransformation,
                     interactionSource = interactionSource,
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.onBackground),
+                    cursorBrush = SolidColor(primaryColor),
                     decorationBox = @Composable { innerTextField ->
                         TextFieldDefaults.TextFieldDecorationBox(
                             value = value.text,
@@ -113,7 +171,7 @@ fun CustomTextField(
                             trailingIcon = trailingIcon,
                             contentPadding = TextFieldDefaults.textFieldWithoutLabelPadding(
                                 innerPadding,
-                                innerPadding,
+                                innerTopPadding,
                                 innerPadding,
                                 innerPadding
                             )

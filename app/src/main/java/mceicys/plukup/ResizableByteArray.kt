@@ -27,6 +27,12 @@ class ResizableByteArray(initSize: Int, initSet: (Int) -> Byte = {0}) {
         this[length] = b
     }
 
+    fun add(ba: ByteArray) {
+        ensure(length + ba.size)
+        ba.copyInto(bytes, length)
+        length += ba.size
+    }
+
     fun clear() {
         length = 0
     }

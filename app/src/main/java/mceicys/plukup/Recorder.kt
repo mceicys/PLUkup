@@ -73,7 +73,7 @@ class Recorder(context: Context, baudRate: Int, dataBits: Int, stopBits: Int, pa
         }
 
         usb.requestPermission(driver.device, PendingIntent.getBroadcast(heldContext, 0,
-            Intent(ACTION_USB_PERMISSION), PendingIntent.FLAG_MUTABLE))
+            Intent(ACTION_USB_PERMISSION).setPackage(heldContext.packageName), PendingIntent.FLAG_MUTABLE))
     }
 
     fun isOpen() : Boolean {
@@ -130,14 +130,15 @@ class Recorder(context: Context, baudRate: Int, dataBits: Int, stopBits: Int, pa
     }
 
     // For testing; only call once
-    fun replay(data: ByteArray) {
+    fun replay(data: ByteArray, numStepBytes: Int = 100, stepSleepTime: Long = 1000L, initSleepTime: Long = 10000L) {
         thread {
-            val step = 100
+            Thread.sleep(initSleepTime)
+
             var from = 0
             var to = 0
 
             while(from < data.size) {
-                while(to - from < step && to < data.size) {
+                while(to - from < numStepBytes && to < data.size) {
                     if(data[to].compareTo(ETX) == 0 || data[to].compareTo(ETB) == 0) {
                         to++
                         break
@@ -148,6 +149,7 @@ class Recorder(context: Context, baudRate: Int, dataBits: Int, stopBits: Int, pa
 
                 serialListener.onNewData(data.copyOfRange(from, to))
                 from = to
+                Thread.sleep(stepSleepTime)
             }
         }
     }
@@ -293,9 +295,11 @@ class Recorder(context: Context, baudRate: Int, dataBits: Int, stopBits: Int, pa
 
                     messageLevel = 0
 
-                    /* FIXME: It turns out the scale device considers anything wrapped with STX and ETX
-                    to be an acknowledgement, the NACK doesn't do anything different; it might want
-                    a specific text message */
+                    /* It turns out the scale device considers anything wrapped with STX and ETX to
+                    be an acknowledgement, it doesn't respond to the NACK differently, so maybe it
+                    doesn't support negative acknowledgements at all and the only thing it can do is
+                    abort transfer if no acknowledgement is received for a while. We'll just discard
+                    bad messages, keep acknowledging, and count the number of errors. */
                     val selectAck: ByteArray? = when (checksumState) {
                         ChecksumState.GOOD -> ackBytes
                         ChecksumState.BAD -> nackBytes
@@ -382,7 +386,7 @@ fun stringToBinary(str: String) : ByteArray {
                         try {
                             val ascii = MathUtils.clamp(str.substring(r, end).toInt(), 0, 255).toByte()
                             bin[w++] = ascii
-                        } catch (e: NumberFormatException) { null }
+                        } catch (_: NumberFormatException) { }
                     }
 
                     r = end
@@ -398,6 +402,16 @@ fun stringToBinary(str: String) : ByteArray {
     }
 
     return bin.copyOfRange(0, w)
+}
+
+fun calcChecksum(bytes: ByteArray): Int {
+    var cs = 0
+
+    for(it in bytes) {
+        cs = (cs xor it.toInt()) % 255
+    }
+
+    return cs
 }
 
 fun <T> Intent.getParcelableExtraUndeprecated(name: String, clazz: Class<T>): T? {
